@@ -1,74 +1,78 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
+from io import BytesIO
 from sklearn.pipeline import make_pipeline
+from sklearn.linear_model import LogisticRegression
+from sklearn.feature_extraction.text import TfidfVectorizer
 import seaborn as sns
 import matplotlib.pyplot as plt
-from io import BytesIO
 
-# --- Function to split the multi-reason rows ---
-def split_rows(df, col):
-    df[col] = df[col].astype(str)
-    df[col] = df[col].str.replace(' ', '')
-    df[col] = df[col].str.upper()
-    df = df.assign(**{col: df[col].str.split(',')})
-    df = df.explode(col).reset_index(drop=True)
-    return df
+st.title("🔍 PV Sub Reason Splitter + Conclusion Predictor")
 
-# --- Train model from TrainingData.csv ---
+# Train model from TrainingData.csv
 @st.cache_resource
 def train_model():
-    train_df = pd.read_csv("TrainingData.csv")
-    X = train_df["detailed_pv_sub_reasons"].astype(str)
-    y = train_df["Conclusion"]
-    
+    df = pd.read_csv("TrainingData.csv")
+    X = df["detailed_pv_sub_reasons"].astype(str)
+    y = df["Conclusion"]
     model = make_pipeline(TfidfVectorizer(), LogisticRegression())
     model.fit(X, y)
     return model
 
-# --- Predict conclusion using model ---
-def predict_conclusion(model, df, col):
-    try:
-        df["Conclusion"] = model.predict(df[col])
-    except:
-        df["Conclusion"] = df[col]
-    return df
+model = train_model()
 
-# --- Main Streamlit app ---
-st.title("🔍 PV Sub-Reason Splitter + Predictor")
-
-uploaded_file = st.file_uploader("📂 Upload your dataset (CSV file)", type=["csv"])
+# Upload interface
+uploaded_file = st.file_uploader("📤 Upload your dataset CSV", type="csv")
 
 if uploaded_file:
-    data = pd.read_csv(uploaded_file)
-    
-    if "detailed_pv_sub_reasons" not in data.columns or "product_detail_cms_vertical" not in data.columns:
-        st.error("CSV must contain 'detailed_pv_sub_reasons' and 'product_detail_cms_vertical' columns.")
-    else:
-        st.subheader("📊 Raw Data Preview")
-        st.dataframe(data.head())
+    df = pd.read_csv(uploaded_file)
+    st.write("### 🔎 Original Data", df.head())
 
-        # Process data
-        model = train_model()
-        processed = split_rows(data, "detailed_pv_sub_reasons")
-        processed = predict_conclusion(model, processed, "detailed_pv_sub_reasons")
+    # Step 1: Split multi-value rows
+    df["detailed_pv_sub_reasons"] = df["detailed_pv_sub_reasons"].astype(str)
+    df_split = df.assign(
+        detailed_pv_sub_reasons=df["detailed_pv_sub_reasons"].str.split(",")
+    ).explode("detailed_pv_sub_reasons").reset_index(drop=True)
 
-        st.subheader("✅ Transformed Data Preview")
-        st.dataframe(processed.head())
+    df_split["detailed_pv_sub_reasons"] = df_split["detailed_pv_sub_reasons"].str.strip()
 
-        # --- Download transformed CSV ---
-        buffer = BytesIO()
-        processed.to_csv(buffer, index=False)
-        buffer.seek(0)
-        st.download_button("⬇️ Download Transformed CSV", buffer, "processed_data.csv", "text/csv")
+    # Step 2: Predict Conclusion
+    def predict_or_fallback(value):
+        try:
+            return model.predict([value])[0]
+        except:
+            return value
 
-        # --- Heatmap-like visualization ---
-        st.subheader("🔥 Issue Frequency by Vertical")
+    df_split["Conclusion"] = df_split["detailed_pv_sub_reasons"].apply(predict_or_fallback)
 
-        heatmap_data = processed.groupby(["product_detail_cms_vertical", "detailed_pv_sub_reasons"]).size().unstack(fill_value=0)
+    st.write("### ✅ Transformed & Predicted Data", df_split.head())
 
-        fig, ax = plt.subplots(figsize=(12, 8))
-        sns.heatmap(heatmap_data, cmap="YlGnBu", annot=True, fmt="d", ax=ax)
+    # Step 3: Download link
+    @st.cache_data
+    def convert_df(df):
+        return df.to_csv(index=False).encode('utf-8')
+
+    csv = convert_df(df_split)
+    st.download_button(
+        "📥 Download Transformed CSV",
+        csv,
+        "transformed_data.csv",
+        "text/csv"
+    )
+
+    # Step 4: Heatmap (Counts of sub reasons by product vertical)
+    if "product_detail_cms_vertical" in df_split.columns:
+        st.write("### 🔥 Heatmap of Sub Reasons by Product Vertical")
+
+        heatmap_data = pd.crosstab(
+            df_split["product_detail_cms_vertical"],
+            df_split["detailed_pv_sub_reasons"]
+        )
+
+        fig, ax = plt.subplots(figsize=(12, 6))
+        sns.heatmap(heatmap_data, cmap="YlGnBu", annot=True, fmt="d", linewidths=0.5, ax=ax)
         st.pyplot(fig)
+    else:
+        st.warning("⚠️ 'product_detail_cms_vertical' column not found for heatmap.")
+
