@@ -18,7 +18,6 @@ uploaded_file = st.file_uploader("Upload dataset", type=["csv"])
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
 
-    # Define exclusion and destination sets (as in your script)
     exclusion_destinations = {
         "returns_center_bulk", "bin", "dpv_pending_bulk", "product_missing_bulk"
     }
@@ -29,26 +28,22 @@ if uploaded_file:
         "refinishing", "refurbishment_area"
     }
 
-    # Ensure required columns exist
     required_cols = ['rvp_rto_status', 'business_unit', 'destination_area', 'alpha_flag']
     if not all(col in df.columns for col in required_cols):
         st.error(f"Dataset missing one or more required columns: {required_cols}")
     else:
-        # Filter valid RTO rows
         valid_rto = df[
             (df['rvp_rto_status'].str.lower() == 'rto') &
             (df['business_unit'].str.lower() != 'giftcard') &
             (~df['destination_area'].isin(exclusion_destinations))
         ].copy()
 
-        # Filter valid RVP rows
         valid_rvp = df[
             ((df['alpha_flag'] == 1) | (df['alpha_flag'] == '1')) &
             (df['business_unit'].str.lower() == 'lifestyle') &
             (~df['destination_area'].isin(exclusion_destinations))
         ].copy()
 
-        # Calculate inventorized sums for RTO
         def inventorized_sum(dest):
             if dest in inventorized_destinations:
                 return 1
@@ -60,31 +55,30 @@ if uploaded_file:
         rto_total = len(valid_rto)
         rto_ri = (rto_inventorized / rto_total) if rto_total > 0 else 0
 
-        # Calculate inventorized sums for RVP
         rvp_inventorized = valid_rvp['destination_area'].apply(inventorized_sum).sum()
         rvp_total = len(valid_rvp)
         rvp_ri = (rvp_inventorized / rvp_total) if rvp_total > 0 else 0
 
-        # Show RTO RI and RVP RI as percentages in square boxes
         col1, col2 = st.columns(2)
         with col1:
             st.markdown(f"""
             <div style="border:2px solid #4CAF50; border-radius:10px; height:150px; display:flex; flex-direction:column; justify-content:center; align-items:center; background:#E8F5E9;">
                 <h3 style="color:#2E7D32; margin:0;">RTO RI</h3>
-                <p style="font-size:36px; font-weight:bold; margin:0;">{rto_ri*100:.2f}%</p>
-                <small>Total: {rto_total}, Inventorized: {rto_inventorized:.1f}</small>
+                <p style="font-size:36px; font-weight:bold; margin:0; color:black;">{rto_ri*100:.2f}%</p>
+                <small style="color:black;">Total: {rto_total}, Inventorized: {rto_inventorized:.1f}</small>
             </div>
             """, unsafe_allow_html=True)
         with col2:
             st.markdown(f"""
             <div style="border:2px solid #4CAF50; border-radius:10px; height:150px; display:flex; flex-direction:column; justify-content:center; align-items:center; background:#E8F5E9;">
                 <h3 style="color:#2E7D32; margin:0;">RVP RI</h3>
-                <p style="font-size:36px; font-weight:bold; margin:0;">{rvp_ri*100:.2f}%</p>
-                <small>Total: {rvp_total}, Inventorized: {rvp_inventorized:.1f}</small>
+                <p style="font-size:36px; font-weight:bold; margin:0; color:black;">{rvp_ri*100:.2f}%</p>
+                <small style="color:black;">Total: {rvp_total}, Inventorized: {rvp_inventorized:.1f}</small>
             </div>
             """, unsafe_allow_html=True)
 
-        # The rest of your processing for detailed reasons and heatmap
+        # Continue with your existing logic for detailed reasons and heatmap below...
+
         df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].fillna("")
         df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].astype(str)
         df_expanded = df.drop('detailed_pv_sub_reasons', axis=1).join(
@@ -135,3 +129,4 @@ if uploaded_file:
             file_name='transformed_dataset.csv',
             mime='text/csv',
         )
+
