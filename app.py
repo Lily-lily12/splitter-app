@@ -1,90 +1,109 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-from io import BytesIO
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
+import joblib
+import os
+from sklearn.preprocessing import LabelEncoder
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
 import seaborn as sns
 import matplotlib.pyplot as plt
+import base64
 
-st.set_page_config(layout="wide")
-st.title("🔍 PV Sub Reason Splitter + Conclusion Predictor")
-
-# Load embedding model
-@st.cache_resource
-def load_embedding_model():
-    return SentenceTransformer('all-MiniLM-L6-v2')
-
-embedding_model = load_embedding_model()
-
-# Load training data and generate embeddings
-@st.cache_resource
-def prepare_embeddings():
+# ------------------ MODEL TRAINING FUNCTION ------------------ #
+def train_model():
     df = pd.read_csv("TrainingData.csv")
-    df["detailed_pv_sub_reasons"] = df["detailed_pv_sub_reasons"].astype(str)
-    embeddings = embedding_model.encode(df["detailed_pv_sub_reasons"].tolist(), convert_to_tensor=True)
-    return df, embeddings
+    df = df.dropna(subset=["detailed_pv_sub_reasons", "Conclusion"])
 
-training_df, training_embeddings = prepare_embeddings()
+    # Remove rows with "no_issue"-like values
+    ignore_values = ['no_issue', 'no_Issue', 'NO_ISSUE']
+    df = df[~df['detailed_pv_sub_reasons'].isin(ignore_values)]
 
-# Upload interface
-uploaded_file = st.file_uploader("📤 Upload your dataset CSV", type="csv")
+    X = df["detailed_pv_sub_reasons"].astype(str)
+    y = df["Conclusion"].astype(str)
 
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
-    st.write("### 🔎 Original Data", df.head())
+    encoder = LabelEncoder()
+    y_encoded = encoder.fit_transform(y)
 
-    # Step 1: Split multi-value rows
-    df["detailed_pv_sub_reasons"] = df["detailed_pv_sub_reasons"].astype(str)
-    df_split = df.assign(
-        detailed_pv_sub_reasons=df["detailed_pv_sub_reasons"].str.split(",")
-    ).explode("detailed_pv_sub_reasons").reset_index(drop=True)
+    pipeline = Pipeline([
+        ('tfidf', TfidfVectorizer(ngram_range=(1, 2))),
+        ('clf', LogisticRegression(max_iter=1000))
+    ])
 
-    df_split["detailed_pv_sub_reasons"] = df_split["detailed_pv_sub_reasons"].str.strip()
+    pipeline.fit(X, y_encoded)
 
-    # Step 2: Predict Conclusion
-    def predict_or_fallback(value):
-        value = str(value).strip()
-        if value == "" or value.lower() in ["no_issue", "no_issues", "no issue", "no_Issue"]:
-            return ""
-        try:
-            val_embedding = embedding_model.encode([value], convert_to_tensor=True)
-            cos_scores = cosine_similarity(val_embedding.cpu().numpy(), training_embeddings.cpu().numpy())[0]
-            best_match_index = np.argmax(cos_scores)
-            return training_df.iloc[best_match_index]["Conclusion"]
-        except:
+    joblib.dump(pipeline, "model.pkl")
+    joblib.dump(encoder, "encoder.pkl")
+
+    return pipeline, encoder
+
+# ------------------ PREDICTION FUNCTION ------------------ #
+def predict_conclusion(value, model, encoder):
+    try:
+        if pd.isna(value) or value.lower() in ['no_issue', 'no_Issue', 'NO_ISSUE']:
             return value
+        pred = model.predict([value])
+        return encoder.inverse_transform(pred)[0]
+    except:
+        return value
 
-    df_split["Conclusion"] = df_split["detailed_pv_sub_reasons"].apply(predict_or_fallback)
+# ------------------ DATA TRANSFORMATION FUNCTION ------------------ #
+def split_rows(df, column):
+    rows = []
+    for _, row in df.iterrows():
+        values = str(row[column]).split(',')
+        for val in values:
+            new_row = row.copy()
+            new_row[column] = val.strip()
+            rows.append(new_row)
+    return pd.DataFrame(rows)
 
-    # Step 3: Remove blanks and "no issue" from visualization
-    df_filtered = df_split[df_split["Conclusion"].str.strip() != ""]
+# ------------------ DOWNLOAD LINK ------------------ #
+def get_table_download_link(df, filename="transformed_data.csv"):
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    return f'<a href="data:file/csv;base64,{b64}" download="{filename}">📥 Download Transformed Data</a>'
 
-    st.write("### ✅ Transformed & Predicted Data", df_split.head())
+# ------------------ HEATMAP FUNCTION ------------------ #
+def generate_heatmap(df):
+    pivot = df.pivot_table(index="product_detail_cms_vertical", 
+                           columns="detailed_pv_sub_reasons", 
+                           aggfunc='size', fill_value=0)
+    fig, ax = plt.subplots(figsize=(12, 8))
+    sns.heatmap(pivot, cmap="YlGnBu", linewidths=0.5, annot=True, fmt='d')
+    st.pyplot(fig)
 
-    # Step 4: Download link
-    @st.cache_data
-    def convert_df(df):
-        return df.to_csv(index=False).encode('utf-8')
+# ------------------ STREAMLIT UI ------------------ #
+st.set_page_config(page_title="Splitter App", layout="wide")
+st.title("🔍 Splitter App with ML Conclusion Predictor")
 
-    csv = convert_df(df_split)
-    st.download_button(
-        "📥 Download Transformed CSV",
-        csv,
-        "transformed_data.csv",
-        "text/csv"
-    )
+st.markdown("Upload your dataset to split multi-reason rows, predict conclusions, and generate a visual heatmap.")
 
-    # Step 5: Heatmap
-    if "business_unit" in df_filtered.columns:
-        st.write("### 🔥 Heatmap of Conclusion by Business Unit")
-        heatmap_data = pd.crosstab(
-            df_filtered["business_unit"],
-            df_filtered["Conclusion"]
-        )
+uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 
-        fig, ax = plt.subplots(figsize=(15, 6))
-        sns.heatmap(heatmap_data, cmap="YlGnBu", annot=True, fmt="d", linewidths=0.5, ax=ax)
-        st.pyplot(fig)
-    else:
-        st.warning("⚠️ 'business_unit' column not found for heatmap.")
+# Load or train model
+if not os.path.exists("model.pkl") or not os.path.exists("encoder.pkl"):
+    with st.spinner("Training model..."):
+        model, encoder = train_model()
+else:
+    model = joblib.load("model.pkl")
+    encoder = joblib.load("encoder.pkl")
+
+if uploaded_file is not None:
+    df = pd.read_csv(uploaded_file)
+    
+    # Split multiple values
+    df_split = split_rows(df, "detailed_pv_sub_reasons")
+
+    # Predict conclusions
+    df_split["Conclusion"] = df_split["detailed_pv_sub_reasons"].apply(lambda x: predict_conclusion(x, model, encoder))
+
+    st.success("✅ Data transformed and predictions added.")
+    st.write(df_split.head())
+
+    # Download link
+    st.markdown(get_table_download_link(df_split), unsafe_allow_html=True)
+
+    # Visualize
+    st.subheader("📊 Heatmap of detailed reasons by product vertical")
+    generate_heatmap(df_split)
