@@ -1,109 +1,59 @@
 import streamlit as st
 import pandas as pd
-import joblib
-import os
-from sklearn.preprocessing import LabelEncoder
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
 import seaborn as sns
 import matplotlib.pyplot as plt
-import base64
+import io
 
-# ------------------ MODEL TRAINING FUNCTION ------------------ #
-def train_model():
-    df = pd.read_csv("TrainingData.csv")
-    df = df.dropna(subset=["detailed_pv_sub_reasons", "Conclusion"])
+st.set_page_config(page_title="CSV Splitter + Heatmap", layout="wide")
+st.title("📂 Split Multi-Value Rows Tool + Heatmap Visualizer")
 
-    # Remove rows with "no_issue"-like values
-    ignore_values = ['no_issue', 'no_Issue', 'NO_ISSUE']
-    df = df[~df['detailed_pv_sub_reasons'].isin(ignore_values)]
+uploaded_file = st.file_uploader("Upload your CSV or Excel file", type=["csv", "xlsx"])
 
-    X = df["detailed_pv_sub_reasons"].astype(str)
-    y = df["Conclusion"].astype(str)
+if uploaded_file:
+    with st.spinner("Reading file..."):
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+        else:
+            df = pd.read_excel(uploaded_file)
 
-    encoder = LabelEncoder()
-    y_encoded = encoder.fit_transform(y)
+    col_to_split = "detailed_pv_sub_reasons"
+    pivot_index_col = "product_detail_cms_vertical"
 
-    pipeline = Pipeline([
-        ('tfidf', TfidfVectorizer(ngram_range=(1, 2))),
-        ('clf', LogisticRegression(max_iter=1000))
-    ])
+    if col_to_split in df.columns and pivot_index_col in df.columns:
+        with st.spinner("Processing data..."):
+            df[col_to_split] = df[col_to_split].astype(str).str.split(',')
+            df_expanded = df.explode(col_to_split)
+            df_expanded[col_to_split] = df_expanded[col_to_split].str.strip()
 
-    pipeline.fit(X, y_encoded)
+        st.success(f"✅ Split completed! {len(df_expanded)} rows generated.")
+        st.write("🔍 Preview (First 10 rows):", df_expanded.head(10))
 
-    joblib.dump(pipeline, "model.pkl")
-    joblib.dump(encoder, "encoder.pkl")
+        # 🎯 Create pivot table
+        pivot_table = pd.pivot_table(
+            df_expanded,
+            index=pivot_index_col,
+            columns=col_to_split,
+            aggfunc='size',
+            fill_value=0
+        )
 
-    return pipeline, encoder
+        st.subheader("📊 Count Table: Defects per Product Vertical")
+        st.dataframe(pivot_table, use_container_width=True)
 
-# ------------------ PREDICTION FUNCTION ------------------ #
-def predict_conclusion(value, model, encoder):
-    try:
-        if pd.isna(value) or value.lower() in ['no_issue', 'no_Issue', 'NO_ISSUE']:
-            return value
-        pred = model.predict([value])
-        return encoder.inverse_transform(pred)[0]
-    except:
-        return value
+        # 🔥 Plot heatmap
+        st.subheader("🔥 Heatmap of Defects by Product Vertical")
+        fig, ax = plt.subplots(figsize=(12, 6))
+        sns.heatmap(pivot_table, cmap="YlOrRd", annot=True, fmt='d', linewidths=.5, ax=ax)
+        st.pyplot(fig)
 
-# ------------------ DATA TRANSFORMATION FUNCTION ------------------ #
-def split_rows(df, column):
-    rows = []
-    for _, row in df.iterrows():
-        values = str(row[column]).split(',')
-        for val in values:
-            new_row = row.copy()
-            new_row[column] = val.strip()
-            rows.append(new_row)
-    return pd.DataFrame(rows)
-
-# ------------------ DOWNLOAD LINK ------------------ #
-def get_table_download_link(df, filename="transformed_data.csv"):
-    csv = df.to_csv(index=False)
-    b64 = base64.b64encode(csv.encode()).decode()
-    return f'<a href="data:file/csv;base64,{b64}" download="{filename}">📥 Download Transformed Data</a>'
-
-# ------------------ HEATMAP FUNCTION ------------------ #
-def generate_heatmap(df):
-    pivot = df.pivot_table(index="product_detail_cms_vertical", 
-                           columns="detailed_pv_sub_reasons", 
-                           aggfunc='size', fill_value=0)
-    fig, ax = plt.subplots(figsize=(12, 8))
-    sns.heatmap(pivot, cmap="YlGnBu", linewidths=0.5, annot=True, fmt='d')
-    st.pyplot(fig)
-
-# ------------------ STREAMLIT UI ------------------ #
-st.set_page_config(page_title="Splitter App", layout="wide")
-st.title("🔍 Splitter App with ML Conclusion Predictor")
-
-st.markdown("Upload your dataset to split multi-reason rows, predict conclusions, and generate a visual heatmap.")
-
-uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
-
-# Load or train model
-if not os.path.exists("model.pkl") or not os.path.exists("encoder.pkl"):
-    with st.spinner("Training model..."):
-        model, encoder = train_model()
-else:
-    model = joblib.load("model.pkl")
-    encoder = joblib.load("encoder.pkl")
-
-if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
-    
-    # Split multiple values
-    df_split = split_rows(df, "detailed_pv_sub_reasons")
-
-    # Predict conclusions
-    df_split["Conclusion"] = df_split["detailed_pv_sub_reasons"].apply(lambda x: predict_conclusion(x, model, encoder))
-
-    st.success("✅ Data transformed and predictions added.")
-    st.write(df_split.head())
-
-    # Download link
-    st.markdown(get_table_download_link(df_split), unsafe_allow_html=True)
-
-    # Visualize
-    st.subheader("📊 Heatmap of detailed reasons by product vertical")
-    generate_heatmap(df_split)
+        # 💾 Download transformed CSV
+        output = io.BytesIO()
+        df_expanded.to_csv(output, index=False)
+        st.download_button(
+            label="📥 Download Transformed CSV",
+            data=output.getvalue(),
+            file_name="transformed_dataset.csv",
+            mime="text/csv"
+        )
+    else:
+        st.error("❌ Required columns not found in the uploaded file.")
