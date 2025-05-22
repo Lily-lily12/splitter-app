@@ -39,6 +39,8 @@ if uploaded_file:
 
     # Step 2: Predict Conclusion
     def predict_or_fallback(value):
+        if pd.isna(value) or value.strip().lower() in ["", "no_issue", "no_issues", "no issue"]:
+            return ""
         try:
             return model.predict([value])[0]
         except:
@@ -61,18 +63,27 @@ if uploaded_file:
         "text/csv"
     )
 
-    # Step 4: Heatmap (Counts of sub reasons by product vertical)
-    if "product_detail_cms_vertical" in df_split.columns:
-        st.write("### 🔥 Heatmap of Sub Reasons by Product Vertical")
+    # Step 4: Heatmap using business_unit and Conclusion
+    if "business_unit" in df_split.columns:
+        st.write("### 🔥 Heatmap of Conclusions by Business Unit")
+
+        heatmap_input = df_split[
+            (df_split["Conclusion"] != "") &
+            (df_split["detailed_pv_sub_reasons"].str.lower().str.strip() != "no_issue")
+        ]
 
         heatmap_data = pd.crosstab(
-            df_split["product_detail_cms_vertical"],
-            df_split["detailed_pv_sub_reasons"]
+            heatmap_input["business_unit"],
+            heatmap_input["Conclusion"]
         )
 
-        fig, ax = plt.subplots(figsize=(12, 6))
-        sns.heatmap(heatmap_data, cmap="YlGnBu", annot=True, fmt="d", linewidths=0.5, ax=ax)
-        st.pyplot(fig)
+        if not heatmap_data.empty:
+            fig, ax = plt.subplots(figsize=(12, 6))
+            sns.heatmap(heatmap_data, cmap="YlGnBu", annot=True, fmt="d", linewidths=0.5, ax=ax)
+            st.pyplot(fig)
+        else:
+            st.warning("No valid data available for heatmap after filtering.")
     else:
-        st.warning("⚠️ 'product_detail_cms_vertical' column not found for heatmap.")
+        st.warning("⚠️ 'business_unit' column not found for heatmap.")
+
 
