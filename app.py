@@ -1,84 +1,67 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 from io import BytesIO
 
 st.set_page_config(layout="wide")
-
-st.title("Return Reason Splitter & Visualizer")
-
-# Rule-based mapping from TrainingData
-@st.cache_data
-def load_training_data():
-    df_train = pd.read_csv("TrainingData.csv")
-    df_train['detailed_pv_sub_reasons'] = df_train['detailed_pv_sub_reasons'].str.strip().str.upper()
-    df_train['Conclusion'] = df_train['Conclusion'].str.strip().str.upper()
-    return dict(zip(df_train['detailed_pv_sub_reasons'], df_train['Conclusion']))
+st.title("📊 Cleaned Heatmap: Reasons vs Conclusion")
 
 # File uploader
-uploaded_file = st.file_uploader("Upload dataset", type=["csv"])
-
+uploaded_file = st.file_uploader("Upload your CSV file", type="csv")
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
 
-    # Split rows with multiple detailed_pv_sub_reasons
-    df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].fillna("")
-    df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].astype(str)
-    df_expanded = df.drop('detailed_pv_sub_reasons', axis=1).join(
-        df['detailed_pv_sub_reasons'].str.split(',', expand=True).stack().reset_index(level=1, drop=True).rename('detailed_pv_sub_reasons')
-    )
+    # Clean column names
+    df.columns = df.columns.str.strip().str.lower()
 
-    # Clean reasons
-    df_expanded['detailed_pv_sub_reasons'] = df_expanded['detailed_pv_sub_reasons'].str.strip().str.upper()
+    # Drop NaNs and rows with 'no_issue'
+    df = df.dropna(subset=['detailed_pv_sub_reasons', 'conclusion'])
+    df = df[~df['detailed_pv_sub_reasons'].str.lower().str.contains("no_issue")]
 
-    # Load mapping and apply conclusion
-    mapping = load_training_data()
-    df_expanded['Conclusion'] = df_expanded['detailed_pv_sub_reasons'].map(mapping)
-    df_expanded['Conclusion'] = df_expanded.apply(
-        lambda row: row['detailed_pv_sub_reasons'] if pd.isna(row['Conclusion']) else row['Conclusion'], axis=1
-    )
+    # Normalize and split multiple sub-reasons
+    df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].str.upper().str.replace(" ", "")
+    df = df.assign(detailed_pv_sub_reasons=df['detailed_pv_sub_reasons'].str.split(','))
+    df = df.explode('detailed_pv_sub_reasons')
 
-    # Remove NaN and no_issue values from visualization
-    df_filtered = df_expanded.copy()
-    df_filtered = df_filtered.dropna(subset=['detailed_pv_sub_reasons'])
-    df_filtered = df_filtered[~df_filtered['detailed_pv_sub_reasons'].str.lower().isin([
-        'no_issue', 'no issue', 'noissue', 'no_issues', 'no issues', 'no-issue', 'nan', ''])]
+    # Remove 'NO_ISSUE' again in case it's nested
+    df = df[~df['detailed_pv_sub_reasons'].str.lower().str.contains("no_issue")]
 
-    # Get top 10 reasons and top 20 verticals for heatmap
-    top_conclusions = df_filtered['Conclusion'].value_counts().nlargest(10).index
-    top_verticals = df_filtered['product_detail_cms_vertical'].value_counts().nlargest(20).index
+    # Clean duplicates due to formatting
+    df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].str.strip().str.upper()
+    df['conclusion'] = df['conclusion'].str.strip().str.upper()
 
-    df_viz = df_filtered[
-        df_filtered['Conclusion'].isin(top_conclusions) & 
-        df_filtered['product_detail_cms_vertical'].isin(top_verticals)
-    ]
+    # Filter top 10 sub reasons and top 20 conclusions
+    top_reasons = df['detailed_pv_sub_reasons'].value_counts().nlargest(10).index
+    top_conclusions = df['conclusion'].value_counts().nlargest(20).index
 
-    heatmap_data = pd.crosstab(df_viz['product_detail_cms_vertical'], df_viz['Conclusion'])
+    df_filtered = df[df['detailed_pv_sub_reasons'].isin(top_reasons) & df['conclusion'].isin(top_conclusions)]
 
-    # Plotting heatmap
-    fig, ax = plt.subplots(figsize=(20, 10))
-    sns.heatmap(heatmap_data, annot=True, fmt="d", cmap="YlGnBu", linewidths=0.5, linecolor='gray', ax=ax)
-    plt.title("Top 10 Return Reasons by Top 20 Verticals", fontsize=18)
+    # Pivot for heatmap
+    heatmap_data = df_filtered.pivot_table(index='detailed_pv_sub_reasons', 
+                                           columns='conclusion', 
+                                           aggfunc='size', 
+                                           fill_value=0)
+
+    # Plotting
+    plt.figure(figsize=(18, 8))
+    sns.set(font_scale=0.9)
+    ax = sns.heatmap(heatmap_data, annot=True, fmt="d", cmap="YlGnBu")
     plt.xlabel("Conclusion")
-    plt.ylabel("Vertical")
-    st.pyplot(fig)
+    plt.ylabel("Detailed PV Sub Reasons")
+    plt.title("🔍 Top Reasons vs Conclusion Heatmap")
+    st.pyplot(plt.gcf())
 
-    # Show transformed data (optional toggle)
+    # Show transformed data toggle
     if st.checkbox("Show Transformed Data"):
-        st.dataframe(df_expanded)
+        st.dataframe(df_filtered)
 
-    # Download link for transformed CSV
-    def convert_df(df):
-        return df.to_csv(index=False).encode('utf-8')
-
-    csv = convert_df(df_expanded)
+    # Download transformed dataset
+    csv = df_filtered.to_csv(index=False).encode('utf-8')
     st.download_button(
-        label="Download Transformed Data as CSV",
+        label="📥 Download Transformed CSV",
         data=csv,
-        file_name='transformed_dataset.csv',
+        file_name='transformed_data.csv',
         mime='text/csv',
     )
-
 
