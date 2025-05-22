@@ -14,70 +14,37 @@ def load_training_data():
     df_train['Conclusion'] = df_train['Conclusion'].str.strip().str.upper()
     return dict(zip(df_train['detailed_pv_sub_reasons'], df_train['Conclusion']))
 
-# CSS style for square metric boxes
-square_style = """
-<style>
-.metric-square {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-    width: 150px;
-    height: 150px;
-    border: 2px solid #4CAF50;
-    border-radius: 10px;
-    background-color: #E8F5E9;
-    margin: 10px;
-    font-family: 'Arial', sans-serif;
-}
-.metric-title {
-    font-size: 20px;
-    font-weight: 700;
-    color: #2E7D32;
-}
-.metric-value {
-    font-size: 36px;
-    font-weight: 900;
-    margin-top: 10px;
-    color: #1B5E20;
-}
-</style>
-"""
-
-st.markdown(square_style, unsafe_allow_html=True)
-
-# File uploader
 uploaded_file = st.file_uploader("Upload dataset", type=["csv"])
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
 
-    if 'business_type' in df.columns:
-        total_rto = len(df[df['business_type'].str.lower() == 'rto'])
-        total_rvp = len(df[df['business_type'].str.lower() == 'rvp'])
+    # Calculate RTO RI and RVP RI based on rvp_rto_status column
+    if 'rvp_rto_status' in df.columns:
+        total_rto = len(df[df['rvp_rto_status'].str.lower() == 'rto'])
+        total_rvp = len(df[df['rvp_rto_status'].str.lower() == 'rvp'])
         total = len(df)
 
         rto_ri = (total_rto / total) * 100 if total > 0 else 0
         rvp_ri = (total_rvp / total) * 100 if total > 0 else 0
 
-        # Show side by side squares with RTO RI and RVP RI
         col1, col2 = st.columns(2)
-
-        col1.markdown(f"""
-        <div class="metric-square">
-            <div class="metric-title">RTO RI</div>
-            <div class="metric-value">{rto_ri:.2f}%</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        col2.markdown(f"""
-        <div class="metric-square">
-            <div class="metric-title">RVP RI</div>
-            <div class="metric-value">{rvp_ri:.2f}%</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # Rest of your processing here (split, mapping, heatmap, download, etc.)
+        with col1:
+            st.markdown(f"""
+            <div style="border:2px solid #4CAF50; border-radius:10px; height:150px; display:flex; flex-direction:column; justify-content:center; align-items:center; background:#E8F5E9;">
+                <h3 style="color:#2E7D32; margin:0;">RTO RI</h3>
+                <p style="font-size:36px; font-weight:bold; margin:0;">{rto_ri:.2f}%</p>
+            </div>
+            """, unsafe_allow_html=True)
+        with col2:
+            st.markdown(f"""
+            <div style="border:2px solid #4CAF50; border-radius:10px; height:150px; display:flex; flex-direction:column; justify-content:center; align-items:center; background:#E8F5E9;">
+                <h3 style="color:#2E7D32; margin:0;">RVP RI</h3>
+                <p style="font-size:36px; font-weight:bold; margin:0;">{rvp_ri:.2f}%</p>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.error("Column 'rvp_rto_status' not found in the uploaded dataset.")
 
     # Split rows with multiple detailed_pv_sub_reasons
     df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].fillna("")
