@@ -23,6 +23,18 @@ uploaded_file = st.file_uploader("Upload dataset", type=["csv"])
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
 
+    # Calculate RTO RI and RVP RI from original dataset
+    if 'business_type' in df.columns:
+        total_rto = len(df[df['business_type'].str.lower() == 'rto'])
+        total_rvp = len(df[df['business_type'].str.lower() == 'rvp'])
+        total = len(df)
+
+        rto_ri = (total_rto / total) * 100 if total > 0 else 0
+        rvp_ri = (total_rvp / total) * 100 if total > 0 else 0
+
+        st.metric("RTO RI", f"{rto_ri:.2f}%")
+        st.metric("RVP RI", f"{rvp_ri:.2f}%")
+
     # Split rows with multiple detailed_pv_sub_reasons
     df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].fillna("")
     df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].astype(str)
@@ -80,4 +92,3 @@ if uploaded_file:
         file_name='transformed_dataset.csv',
         mime='text/csv',
     )
-
