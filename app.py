@@ -7,6 +7,19 @@ from io import BytesIO
 st.set_page_config(page_title="PV Sub Reason Splitter & Visualizer", layout="wide")
 st.title("📦 Return Reason Splitter & Visualizer")
 
+st.markdown("""
+Upload a dataset that contains:
+- `detailed_pv_sub_reasons` (comma-separated values allowed)
+- `product_detail_cms_vertical` (for visualization)
+- `business_unit` (optional but used previously)
+
+The app will:
+1. Split multi-reason rows into separate rows
+2. Add a rule-based `Conclusion` column from training data
+3. Provide a download link for the transformed data
+4. Show a heatmap of top reasons grouped by vertical
+""")
+
 # Upload main data
 main_file = st.file_uploader("Upload your dataset CSV", type="csv")
 training_file = st.file_uploader("Upload TrainingData.csv", type="csv")
@@ -42,13 +55,7 @@ if main_file and training_file:
         # --- Step 4: Filter Top N reasons ---
         top_n = 15
         top_reasons = df['detailed_pv_sub_reasons'].value_counts().nlargest(top_n).index
-
-        # For heatmap, exclude NaN and no_issue again explicitly
-        heatmap_df = df[
-            (df['detailed_pv_sub_reasons'].isin(top_reasons)) &
-            (~df['detailed_pv_sub_reasons'].isin(exclude)) &
-            (df['detailed_pv_sub_reasons'].notna())
-        ]
+        df_filtered = df[df['detailed_pv_sub_reasons'].isin(top_reasons)]
 
         # --- Step 5: Download transformed data ---
         csv = df.to_csv(index=False).encode('utf-8')
@@ -65,7 +72,7 @@ if main_file and training_file:
 
         # --- Step 7: Heatmap by Vertical and Reasons ---
         st.subheader("🔥 Heatmap of Top Reasons by Vertical")
-        heatmap_data = heatmap_df.pivot_table(
+        heatmap_data = df_filtered.pivot_table(
             index='product_detail_cms_vertical',
             columns='detailed_pv_sub_reasons',
             aggfunc='size',
@@ -94,5 +101,4 @@ if main_file and training_file:
         st.pyplot(plt)
 else:
     st.info("👆 Please upload both dataset and training file to continue.")
-
 
