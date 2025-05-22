@@ -4,64 +4,66 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from io import BytesIO
 
-st.set_page_config(layout="wide")
-st.title("📊 Cleaned Heatmap: Reasons vs Conclusion")
+st.set_page_config(page_title="Return Reason Splitter", layout="wide")
+st.title("📦 Return Reason Splitter")
 
-# File uploader
-uploaded_file = st.file_uploader("Upload your CSV file", type="csv")
+uploaded_file = st.file_uploader("Upload a CSV file", type=["csv"])
+
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
+    df.columns = df.columns.str.strip()  # Remove extra whitespace from column names
 
-    # Clean column names
-    df.columns = df.columns.str.strip().str.lower()
-
-    # Drop NaNs and rows with 'no_issue'
+    # Drop rows with missing essential data
     df = df.dropna(subset=['detailed_pv_sub_reasons', 'conclusion'])
-    df = df[~df['detailed_pv_sub_reasons'].str.lower().str.contains("no_issue")]
 
-    # Normalize and split multiple sub-reasons
-    df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].str.upper().str.replace(" ", "")
-    df = df.assign(detailed_pv_sub_reasons=df['detailed_pv_sub_reasons'].str.split(','))
+    # Normalize column values
+    df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].str.lower().str.strip()
+    df['conclusion'] = df['conclusion'].str.lower().str.strip()
+    df['product_detail_cms_vertical'] = df['product_detail_cms_vertical'].str.lower().str.strip()
+
+    # Remove 'no_issue' from detailed_pv_sub_reasons
+    df = df[~df['detailed_pv_sub_reasons'].str.contains('no_issue', na=False)]
+
+    # Split multiple reasons into separate rows
+    df = df.assign(detailed_pv_sub_reasons=df['detailed_pv_sub_reasons'].str.split(","))
     df = df.explode('detailed_pv_sub_reasons')
+    df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].str.strip()
 
-    # Remove 'NO_ISSUE' again in case it's nested
-    df = df[~df['detailed_pv_sub_reasons'].str.lower().str.contains("no_issue")]
+    # Remove rows with 'no_issue' again if any slipped through
+    df = df[~df['detailed_pv_sub_reasons'].str.contains('no_issue', na=False)]
 
-    # Clean duplicates due to formatting
-    df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].str.strip().str.upper()
-    df['conclusion'] = df['conclusion'].str.strip().str.upper()
+    # Filter to top N reasons and top M verticals
+    top_n_reasons = 10
+    top_m_verticals = 20
+    top_reasons = df['detailed_pv_sub_reasons'].value_counts().nlargest(top_n_reasons).index
+    top_verticals = df['product_detail_cms_vertical'].value_counts().nlargest(top_m_verticals).index
 
-    # Filter top 10 sub reasons and top 20 conclusions
-    top_reasons = df['detailed_pv_sub_reasons'].value_counts().nlargest(10).index
-    top_conclusions = df['conclusion'].value_counts().nlargest(20).index
+    df_filtered = df[df['detailed_pv_sub_reasons'].isin(top_reasons)]
+    df_filtered = df_filtered[df_filtered['product_detail_cms_vertical'].isin(top_verticals)]
 
-    df_filtered = df[df['detailed_pv_sub_reasons'].isin(top_reasons) & df['conclusion'].isin(top_conclusions)]
+    # Create pivot table
+    heatmap_data = pd.pivot_table(
+        df_filtered,
+        index='product_detail_cms_vertical',
+        columns='detailed_pv_sub_reasons',
+        values='conclusion',
+        aggfunc='count',
+        fill_value=0
+    )
 
-    # Pivot for heatmap
-    heatmap_data = df_filtered.pivot_table(index='detailed_pv_sub_reasons', 
-                                           columns='conclusion', 
-                                           aggfunc='size', 
-                                           fill_value=0)
+    # Heatmap visualization
+    st.markdown("### 🔥 Heatmap: Top Return Reasons by Vertical")
+    fig, ax = plt.subplots(figsize=(16, 8))
+    sns.heatmap(heatmap_data, annot=True, fmt="d", cmap="YlGnBu", linewidths=0.5, ax=ax)
+    ax.set_xlabel("Conclusion")
+    ax.set_ylabel("Vertical")
+    st.pyplot(fig)
 
-    # Plotting
-    plt.figure(figsize=(18, 8))
-    sns.set(font_scale=0.9)
-    ax = sns.heatmap(heatmap_data, annot=True, fmt="d", cmap="YlGnBu")
-    plt.xlabel("Conclusion")
-    plt.ylabel("Detailed PV Sub Reasons")
-    plt.title("🔍 Top Reasons vs Conclusion Heatmap")
-    st.pyplot(plt.gcf())
-
-    # Show transformed data toggle
+    # Optionally show transformed data
     if st.checkbox("Show Transformed Data"):
         st.dataframe(df_filtered)
 
-    # Download transformed dataset
+    # Download processed CSV
     csv = df_filtered.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 Download Transformed CSV",
-        data=csv,
-        file_name='transformed_data.csv',
-        mime='text/csv',
-    )
+    st.download_button("Download Transformed Data", csv, "transformed_data.csv", "text/csv")
 
