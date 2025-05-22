@@ -1,12 +1,9 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
-from io import BytesIO
 
 st.set_page_config(layout="wide")
-
 st.title("Return Reason Splitter & Visualizer")
 
 # Rule-based mapping from TrainingData
@@ -17,13 +14,44 @@ def load_training_data():
     df_train['Conclusion'] = df_train['Conclusion'].str.strip().str.upper()
     return dict(zip(df_train['detailed_pv_sub_reasons'], df_train['Conclusion']))
 
+# CSS style for square metric boxes
+square_style = """
+<style>
+.metric-square {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    width: 150px;
+    height: 150px;
+    border: 2px solid #4CAF50;
+    border-radius: 10px;
+    background-color: #E8F5E9;
+    margin: 10px;
+    font-family: 'Arial', sans-serif;
+}
+.metric-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: #2E7D32;
+}
+.metric-value {
+    font-size: 36px;
+    font-weight: 900;
+    margin-top: 10px;
+    color: #1B5E20;
+}
+</style>
+"""
+
+st.markdown(square_style, unsafe_allow_html=True)
+
 # File uploader
 uploaded_file = st.file_uploader("Upload dataset", type=["csv"])
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
 
-    # Calculate RTO RI and RVP RI from original dataset
     if 'business_type' in df.columns:
         total_rto = len(df[df['business_type'].str.lower() == 'rto'])
         total_rvp = len(df[df['business_type'].str.lower() == 'rvp'])
@@ -32,8 +60,24 @@ if uploaded_file:
         rto_ri = (total_rto / total) * 100 if total > 0 else 0
         rvp_ri = (total_rvp / total) * 100 if total > 0 else 0
 
-        st.metric("RTO RI", f"{rto_ri:.2f}%")
-        st.metric("RVP RI", f"{rvp_ri:.2f}%")
+        # Show side by side squares with RTO RI and RVP RI
+        col1, col2 = st.columns(2)
+
+        col1.markdown(f"""
+        <div class="metric-square">
+            <div class="metric-title">RTO RI</div>
+            <div class="metric-value">{rto_ri:.2f}%</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        col2.markdown(f"""
+        <div class="metric-square">
+            <div class="metric-title">RVP RI</div>
+            <div class="metric-value">{rvp_ri:.2f}%</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Rest of your processing here (split, mapping, heatmap, download, etc.)
 
     # Split rows with multiple detailed_pv_sub_reasons
     df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].fillna("")
@@ -42,34 +86,30 @@ if uploaded_file:
         df['detailed_pv_sub_reasons'].str.split(',', expand=True).stack().reset_index(level=1, drop=True).rename('detailed_pv_sub_reasons')
     )
 
-    # Clean reasons
     df_expanded['detailed_pv_sub_reasons'] = df_expanded['detailed_pv_sub_reasons'].str.strip().str.upper()
 
-    # Load mapping and apply conclusion
     mapping = load_training_data()
     df_expanded['Conclusion'] = df_expanded['detailed_pv_sub_reasons'].map(mapping)
     df_expanded['Conclusion'] = df_expanded.apply(
         lambda row: row['detailed_pv_sub_reasons'] if pd.isna(row['Conclusion']) else row['Conclusion'], axis=1
     )
 
-    # Remove NaN and no_issue values from visualization
     df_filtered = df_expanded.copy()
     df_filtered = df_filtered.dropna(subset=['detailed_pv_sub_reasons'])
     df_filtered = df_filtered[~df_filtered['detailed_pv_sub_reasons'].str.lower().isin([
-        'no_issue', 'no issue', 'noissue', 'no_issues', 'no issues', 'no-issue', 'nan', ''])]
+        'no_issue', 'no issue', 'noissue', 'no_issues', 'no issues', 'no-issue', 'nan', ''
+    ])]
 
-    # Get top 10 reasons and top 20 verticals for heatmap
     top_conclusions = df_filtered['Conclusion'].value_counts().nlargest(10).index
     top_verticals = df_filtered['product_detail_cms_vertical'].value_counts().nlargest(20).index
 
     df_viz = df_filtered[
-        df_filtered['Conclusion'].isin(top_conclusions) & 
+        df_filtered['Conclusion'].isin(top_conclusions) &
         df_filtered['product_detail_cms_vertical'].isin(top_verticals)
     ]
 
     heatmap_data = pd.crosstab(df_viz['product_detail_cms_vertical'], df_viz['Conclusion'])
 
-    # Plotting heatmap
     fig, ax = plt.subplots(figsize=(20, 10))
     sns.heatmap(heatmap_data, annot=True, fmt="d", cmap="YlGnBu", linewidths=0.5, linecolor='gray', ax=ax)
     plt.title("Top 10 Return Reasons by Top 20 Verticals", fontsize=18)
@@ -77,11 +117,9 @@ if uploaded_file:
     plt.ylabel("Vertical")
     st.pyplot(fig)
 
-    # Show transformed data (optional toggle)
     if st.checkbox("Show Transformed Data"):
         st.dataframe(df_expanded)
 
-    # Download link for transformed CSV
     def convert_df(df):
         return df.to_csv(index=False).encode('utf-8')
 
