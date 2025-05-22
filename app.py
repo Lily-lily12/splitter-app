@@ -48,7 +48,7 @@ if main_file and training_file:
         df['Conclusion'] = df['detailed_pv_sub_reasons'].apply(get_conclusion)
 
         # --- Step 3: Clean data (remove no_issue or NaN) ---
-        exclude = ['no_issue', 'no issue', 'no']
+        exclude = ['no_issue', 'no issue', 'no', 'nan']
         df = df[~df['detailed_pv_sub_reasons'].isin(exclude)]
         df = df.dropna(subset=['detailed_pv_sub_reasons', 'product_detail_cms_vertical'])
 
