@@ -2,25 +2,30 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
-from sklearn.pipeline import make_pipeline
-from sklearn.linear_model import LogisticRegression
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
 import seaborn as sns
 import matplotlib.pyplot as plt
 
+st.set_page_config(layout="wide")
 st.title("🔍 PV Sub Reason Splitter + Conclusion Predictor")
 
-# Train model from TrainingData.csv
+# Load embedding model
 @st.cache_resource
-def train_model():
-    df = pd.read_csv("TrainingData.csv")
-    X = df["detailed_pv_sub_reasons"].astype(str)
-    y = df["Conclusion"]
-    model = make_pipeline(TfidfVectorizer(), LogisticRegression())
-    model.fit(X, y)
-    return model
+def load_embedding_model():
+    return SentenceTransformer('all-MiniLM-L6-v2')
 
-model = train_model()
+embedding_model = load_embedding_model()
+
+# Load training data and generate embeddings
+@st.cache_resource
+def prepare_embeddings():
+    df = pd.read_csv("TrainingData.csv")
+    df["detailed_pv_sub_reasons"] = df["detailed_pv_sub_reasons"].astype(str)
+    embeddings = embedding_model.encode(df["detailed_pv_sub_reasons"].tolist(), convert_to_tensor=True)
+    return df, embeddings
+
+training_df, training_embeddings = prepare_embeddings()
 
 # Upload interface
 uploaded_file = st.file_uploader("📤 Upload your dataset CSV", type="csv")
@@ -39,18 +44,25 @@ if uploaded_file:
 
     # Step 2: Predict Conclusion
     def predict_or_fallback(value):
-        if pd.isna(value) or value.strip().lower() in ["", "no_issue", "no_issues", "no issue"]:
+        value = str(value).strip()
+        if value == "" or value.lower() in ["no_issue", "no_issues", "no issue", "no_Issue"]:
             return ""
         try:
-            return model.predict([value])[0]
+            val_embedding = embedding_model.encode([value], convert_to_tensor=True)
+            cos_scores = cosine_similarity(val_embedding.cpu().numpy(), training_embeddings.cpu().numpy())[0]
+            best_match_index = np.argmax(cos_scores)
+            return training_df.iloc[best_match_index]["Conclusion"]
         except:
             return value
 
     df_split["Conclusion"] = df_split["detailed_pv_sub_reasons"].apply(predict_or_fallback)
 
+    # Step 3: Remove blanks and "no issue" from visualization
+    df_filtered = df_split[df_split["Conclusion"].str.strip() != ""]
+
     st.write("### ✅ Transformed & Predicted Data", df_split.head())
 
-    # Step 3: Download link
+    # Step 4: Download link
     @st.cache_data
     def convert_df(df):
         return df.to_csv(index=False).encode('utf-8')
@@ -63,27 +75,16 @@ if uploaded_file:
         "text/csv"
     )
 
-    # Step 4: Heatmap using business_unit and Conclusion
-    if "business_unit" in df_split.columns:
-        st.write("### 🔥 Heatmap of Conclusions by Business Unit")
-
-        heatmap_input = df_split[
-            (df_split["Conclusion"] != "") &
-            (df_split["detailed_pv_sub_reasons"].str.lower().str.strip() != "no_issue")
-        ]
-
+    # Step 5: Heatmap
+    if "business_unit" in df_filtered.columns:
+        st.write("### 🔥 Heatmap of Conclusion by Business Unit")
         heatmap_data = pd.crosstab(
-            heatmap_input["business_unit"],
-            heatmap_input["Conclusion"]
+            df_filtered["business_unit"],
+            df_filtered["Conclusion"]
         )
 
-        if not heatmap_data.empty:
-            fig, ax = plt.subplots(figsize=(12, 6))
-            sns.heatmap(heatmap_data, cmap="YlGnBu", annot=True, fmt="d", linewidths=0.5, ax=ax)
-            st.pyplot(fig)
-        else:
-            st.warning("No valid data available for heatmap after filtering.")
+        fig, ax = plt.subplots(figsize=(15, 6))
+        sns.heatmap(heatmap_data, cmap="YlGnBu", annot=True, fmt="d", linewidths=0.5, ax=ax)
+        st.pyplot(fig)
     else:
         st.warning("⚠️ 'business_unit' column not found for heatmap.")
-
-
