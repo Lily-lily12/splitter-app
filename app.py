@@ -32,7 +32,7 @@ if uploaded_file:
     if not all(col in df.columns for col in required_cols):
         st.error(f"Dataset missing one or more required columns: {required_cols}")
     else:
-        # RTO and RVP filtering for RI
+        # RTO and RVP filtering for RI calculation (same as before)
         valid_rto = df[
             (df['rvp_rto_status'].str.lower() == 'rto') &
             (df['business_unit'].str.lower() != 'giftcard') &
@@ -79,37 +79,39 @@ if uploaded_file:
             </div>
             """, unsafe_allow_html=True)
 
-        # Expand detailed reasons
+        # Expand detailed reasons for full dataset
         df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].fillna("").astype(str)
         df_expanded = df.drop('detailed_pv_sub_reasons', axis=1).join(
             df['detailed_pv_sub_reasons'].str.split(',', expand=True)
               .stack().reset_index(level=1, drop=True)
               .rename('detailed_pv_sub_reasons')
         )
-
         df_expanded['detailed_pv_sub_reasons'] = df_expanded['detailed_pv_sub_reasons'].str.strip().str.upper()
 
-        # Map reasons to conclusions
+        # Map reasons to conclusions for full dataset
         mapping = load_training_data()
         df_expanded['Conclusion'] = df_expanded['detailed_pv_sub_reasons'].map(mapping)
         df_expanded['Conclusion'] = df_expanded.apply(
             lambda row: row['detailed_pv_sub_reasons'] if pd.isna(row['Conclusion']) else row['Conclusion'], axis=1
         )
 
-        # Define function to filter out inventorized points and clean data
-        def filter_non_inventorized(data):
-            return data[
-                (~data['destination_area'].isin(exclusion_destinations)) &
-                (~data['destination_area'].isin(inventorized_destinations)) &
-                (~data['destination_area'].isin(refinishing_destinations))
-            ]
+        # Normalize Conclusion to avoid duplicates like "MAJORDENTSCRATCH ON PACKAGING"
+        df_expanded['Conclusion'] = (
+            df_expanded['Conclusion']
+            .str.strip()
+            .str.upper()
+            .str.replace(r'\s+', ' ', regex=True)
+        )
 
-        # Clean and filter RTO and RVP again for heatmap
-        rto_heatmap_data = filter_non_inventorized(valid_rto.copy())
-        rvp_heatmap_data = filter_non_inventorized(valid_rvp.copy())
+        # For heatmap, use valid_rto and valid_rvp but only exclude exclusion_destinations
+        # (do NOT exclude inventorized/refinishing destinations)
+        def filter_for_heatmap(data):
+            return data[~data['destination_area'].isin(exclusion_destinations)].copy()
+
+        rto_heatmap_data = filter_for_heatmap(valid_rto)
+        rvp_heatmap_data = filter_for_heatmap(valid_rvp)
 
         def prepare_for_heatmap(data):
-            # Expand reasons
             data['detailed_pv_sub_reasons'] = data['detailed_pv_sub_reasons'].fillna("").astype(str)
             data_exp = data.drop('detailed_pv_sub_reasons', axis=1).join(
                 data['detailed_pv_sub_reasons'].str.split(',', expand=True)
@@ -118,19 +120,25 @@ if uploaded_file:
             )
             data_exp['detailed_pv_sub_reasons'] = data_exp['detailed_pv_sub_reasons'].str.strip().str.upper()
 
-            # Map
             data_exp['Conclusion'] = data_exp['detailed_pv_sub_reasons'].map(mapping)
             data_exp['Conclusion'] = data_exp.apply(
                 lambda row: row['detailed_pv_sub_reasons'] if pd.isna(row['Conclusion']) else row['Conclusion'], axis=1
             )
 
-            # Remove no issue
-            no_issues = ['no_issue', 'no issue', 'noissue', 'no_issues', 'no issues', 'no-issue', 'nan', '']
+            # Normalize Conclusion here as well
+            data_exp['Conclusion'] = (
+                data_exp['Conclusion']
+                .str.strip()
+                .str.upper()
+                .str.replace(r'\s+', ' ', regex=True)
+            )
+
+            # Remove no issue reasons
+            no_issues = {'no_issue', 'no issue', 'noissue', 'no_issues', 'no issues', 'no-issue', 'nan', ''}
             data_exp = data_exp[~data_exp['detailed_pv_sub_reasons'].str.lower().isin(no_issues)]
 
             return data_exp
 
-        # Prep and plot
         def plot_heatmap(df_data, title):
             if df_data.empty or 'Conclusion' not in df_data.columns:
                 st.warning(f"No data available for {title}")
@@ -157,18 +165,18 @@ if uploaded_file:
             plt.ylabel("Vertical")
             st.pyplot(fig)
 
-        # UI options to generate each heatmap
+        # Buttons to generate heatmaps
         if st.button("Generate RTO Heatmap"):
             plot_heatmap(prepare_for_heatmap(rto_heatmap_data), "RTO - Non-Inventorized - Top 10 Reasons by Top 20 Verticals")
 
         if st.button("Generate RVP Heatmap"):
             plot_heatmap(prepare_for_heatmap(rvp_heatmap_data), "RVP - Non-Inventorized - Top 10 Reasons by Top 20 Verticals")
 
-        # Show transformed data option
+        # Show transformed full dataset expanded
         if st.checkbox("Show Transformed Data"):
             st.dataframe(df_expanded)
 
-        # Download
+        # Download transformed data as CSV
         def convert_df(df):
             return df.to_csv(index=False).encode('utf-8')
 
