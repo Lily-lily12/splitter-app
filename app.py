@@ -22,9 +22,7 @@ if uploaded_file:
         "returns_center_bulk", "bin", "dpv_pending_bulk", "product_missing_bulk"
     }
     inventorized_destinations = {
-        "store", "returns_supplier_return_area", "seller_return_area"
-    }
-    refinishing_destinations = {
+        "store", "returns_supplier_return_area", "seller_return_area",
         "refinishing", "refurbishment_area"
     }
 
@@ -32,6 +30,7 @@ if uploaded_file:
     if not all(col in df.columns for col in required_cols):
         st.error(f"Dataset missing one or more required columns: {required_cols}")
     else:
+        # RI calculations
         valid_rto = df[
             (df['rvp_rto_status'].str.lower() == 'rto') &
             (df['business_unit'].str.lower() != 'giftcard') &
@@ -45,9 +44,9 @@ if uploaded_file:
         ].copy()
 
         def inventorized_sum(dest):
-            if dest in inventorized_destinations:
+            if dest in {"store", "returns_supplier_return_area", "seller_return_area"}:
                 return 1
-            if dest in refinishing_destinations:
+            if dest in {"refinishing", "refurbishment_area"}:
                 return 0.9
             return 0
 
@@ -59,6 +58,7 @@ if uploaded_file:
         rvp_total = len(valid_rvp)
         rvp_ri = (rvp_inventorized / rvp_total) if rvp_total > 0 else 0
 
+        # Display RI metrics
         col1, col2 = st.columns(2)
         with col1:
             st.markdown(f"""
@@ -77,52 +77,64 @@ if uploaded_file:
             </div>
             """, unsafe_allow_html=True)
 
-        # Continue with your existing logic for detailed reasons and heatmap below...
-
-        df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].fillna("")
-        df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].astype(str)
+        # Expand detailed reasons
+        df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].fillna("").astype(str)
         df_expanded = df.drop('detailed_pv_sub_reasons', axis=1).join(
             df['detailed_pv_sub_reasons'].str.split(',', expand=True).stack().reset_index(level=1, drop=True).rename('detailed_pv_sub_reasons')
         )
-
         df_expanded['detailed_pv_sub_reasons'] = df_expanded['detailed_pv_sub_reasons'].str.strip().str.upper()
 
+        # Map to conclusions
         mapping = load_training_data()
         df_expanded['Conclusion'] = df_expanded['detailed_pv_sub_reasons'].map(mapping)
         df_expanded['Conclusion'] = df_expanded.apply(
             lambda row: row['detailed_pv_sub_reasons'] if pd.isna(row['Conclusion']) else row['Conclusion'], axis=1
         )
 
-        df_filtered = df_expanded.copy()
-        df_filtered = df_filtered.dropna(subset=['detailed_pv_sub_reasons'])
-        df_filtered = df_filtered[~df_filtered['detailed_pv_sub_reasons'].str.lower().isin([
-            'no_issue', 'no issue', 'noissue', 'no_issues', 'no issues', 'no-issue', 'nan', ''
-        ])]
-
-        top_conclusions = df_filtered['Conclusion'].value_counts().nlargest(10).index
-        top_verticals = df_filtered['product_detail_cms_vertical'].value_counts().nlargest(20).index
-
-        df_viz = df_filtered[
-            df_filtered['Conclusion'].isin(top_conclusions) &
-            df_filtered['product_detail_cms_vertical'].isin(top_verticals)
+        # Filter unwanted data
+        df_expanded = df_expanded[
+            (~df_expanded['destination_area'].isin(exclusion_destinations)) &
+            (~df_expanded['detailed_pv_sub_reasons'].str.lower().isin([
+                'no_issue', 'no issue', 'noissue', 'no_issues', 'no issues', 'no-issue', 'nan', ''
+            ])) &
+            (~df_expanded['destination_area'].isin(inventorized_destinations))
         ]
 
-        heatmap_data = pd.crosstab(df_viz['product_detail_cms_vertical'], df_viz['Conclusion'])
+        # Set top categories
+        top_conclusions = df_expanded['Conclusion'].value_counts().nlargest(10).index
+        top_verticals = df_expanded['product_detail_cms_vertical'].value_counts().nlargest(20).index
 
-        fig, ax = plt.subplots(figsize=(20, 10))
-        sns.heatmap(heatmap_data, annot=True, fmt="d", cmap="YlGnBu", linewidths=0.5, linecolor='gray', ax=ax)
-        plt.title("Top 10 Return Reasons by Top 20 Verticals", fontsize=18)
-        plt.xlabel("Conclusion")
-        plt.ylabel("Vertical")
-        st.pyplot(fig)
+        def plot_heatmap(filtered_df, title):
+            df_viz = filtered_df[
+                filtered_df['Conclusion'].isin(top_conclusions) &
+                filtered_df['product_detail_cms_vertical'].isin(top_verticals)
+            ]
+            heatmap_data = pd.crosstab(df_viz['product_detail_cms_vertical'], df_viz['Conclusion'])
+            fig, ax = plt.subplots(figsize=(20, 10))
+            sns.heatmap(heatmap_data, annot=True, fmt="d", cmap="YlGnBu", linewidths=0.5, linecolor='gray', ax=ax)
+            plt.title(title, fontsize=18)
+            plt.xlabel("Conclusion")
+            plt.ylabel("Vertical")
+            st.pyplot(fig)
+
+        if st.checkbox("Generate RTO Heatmap"):
+            rto_filtered = df_expanded[
+                (df_expanded['rvp_rto_status'].str.lower() == 'rto') &
+                (df_expanded['business_unit'].str.lower() != 'giftcard')
+            ]
+            plot_heatmap(rto_filtered, "RTO - Non-Inventorized - Top 10 Return Reasons by Top 20 Verticals")
+
+        if st.checkbox("Generate RVP Heatmap"):
+            rvp_filtered = df_expanded[
+                ((df_expanded['alpha_flag'] == 1) | (df_expanded['alpha_flag'] == '1')) &
+                (df_expanded['business_unit'].str.lower() == 'lifestyle')
+            ]
+            plot_heatmap(rvp_filtered, "RVP - Non-Inventorized - Top 10 Return Reasons by Top 20 Verticals")
 
         if st.checkbox("Show Transformed Data"):
             st.dataframe(df_expanded)
 
-        def convert_df(df):
-            return df.to_csv(index=False).encode('utf-8')
-
-        csv = convert_df(df_expanded)
+        csv = df_expanded.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="Download Transformed Data as CSV",
             data=csv,
