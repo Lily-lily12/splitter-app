@@ -22,7 +22,9 @@ if uploaded_file:
         "returns_center_bulk", "bin", "dpv_pending_bulk", "product_missing_bulk"
     }
     inventorized_destinations = {
-        "store", "returns_supplier_return_area", "seller_return_area",
+        "store", "returns_supplier_return_area", "seller_return_area"
+    }
+    refinishing_destinations = {
         "refinishing", "refurbishment_area"
     }
 
@@ -30,7 +32,7 @@ if uploaded_file:
     if not all(col in df.columns for col in required_cols):
         st.error(f"Dataset missing one or more required columns: {required_cols}")
     else:
-        # RI calculations
+        # ----------- FILTER FOR RTO AND RVP (NON-EXCLUDED ONLY) -----------
         valid_rto = df[
             (df['rvp_rto_status'].str.lower() == 'rto') &
             (df['business_unit'].str.lower() != 'giftcard') &
@@ -43,10 +45,11 @@ if uploaded_file:
             (~df['destination_area'].isin(exclusion_destinations))
         ].copy()
 
+        # ----------- RI BOXES (RETAINED) -----------
         def inventorized_sum(dest):
-            if dest in {"store", "returns_supplier_return_area", "seller_return_area"}:
+            if dest in inventorized_destinations:
                 return 1
-            if dest in {"refinishing", "refurbishment_area"}:
+            if dest in refinishing_destinations:
                 return 0.9
             return 0
 
@@ -58,7 +61,6 @@ if uploaded_file:
         rvp_total = len(valid_rvp)
         rvp_ri = (rvp_inventorized / rvp_total) if rvp_total > 0 else 0
 
-        # Display RI metrics
         col1, col2 = st.columns(2)
         with col1:
             st.markdown(f"""
@@ -77,30 +79,46 @@ if uploaded_file:
             </div>
             """, unsafe_allow_html=True)
 
-        # Expand detailed reasons
+        # ----------- DATA TRANSFORMATION -----------
         df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].fillna("").astype(str)
         df_expanded = df.drop('detailed_pv_sub_reasons', axis=1).join(
             df['detailed_pv_sub_reasons'].str.split(',', expand=True).stack().reset_index(level=1, drop=True).rename('detailed_pv_sub_reasons')
         )
         df_expanded['detailed_pv_sub_reasons'] = df_expanded['detailed_pv_sub_reasons'].str.strip().str.upper()
 
-        # Map to conclusions
         mapping = load_training_data()
         df_expanded['Conclusion'] = df_expanded['detailed_pv_sub_reasons'].map(mapping)
         df_expanded['Conclusion'] = df_expanded.apply(
             lambda row: row['detailed_pv_sub_reasons'] if pd.isna(row['Conclusion']) else row['Conclusion'], axis=1
         )
 
-        # Filter unwanted data
-        df_expanded = df_expanded[
+        # ----------- FILTER FOR NON-INVENTORIZED ONLY (for heatmap logic) -----------
+        def is_inventorized(dest):
+            if dest in inventorized_destinations or dest in refinishing_destinations:
+                return True
+            return False
+
+        # Exclude inventorized
+        rto_filtered = df_expanded[
+            (df_expanded['rvp_rto_status'].str.lower() == 'rto') &
+            (df_expanded['business_unit'].str.lower() != 'giftcard') &
             (~df_expanded['destination_area'].isin(exclusion_destinations)) &
-            (~df_expanded['detailed_pv_sub_reasons'].str.lower().isin([
-                'no_issue', 'no issue', 'noissue', 'no_issues', 'no issues', 'no-issue', 'nan', ''
-            ])) &
-            (~df_expanded['destination_area'].isin(inventorized_destinations))
+            (~df_expanded['destination_area'].apply(is_inventorized))
         ]
 
-        # Set top categories
+        rvp_filtered = df_expanded[
+            ((df_expanded['alpha_flag'] == 1) | (df_expanded['alpha_flag'] == '1')) &
+            (df_expanded['business_unit'].str.lower() == 'lifestyle') &
+            (~df_expanded['destination_area'].isin(exclusion_destinations)) &
+            (~df_expanded['destination_area'].apply(is_inventorized))
+        ]
+
+        # Remove 'no issue' reasons
+        no_issues_set = {'no_issue', 'no issue', 'noissue', 'no_issues', 'no issues', 'no-issue', 'nan', ''}
+        rto_filtered = rto_filtered[~rto_filtered['detailed_pv_sub_reasons'].str.lower().isin(no_issues_set)]
+        rvp_filtered = rvp_filtered[~rvp_filtered['detailed_pv_sub_reasons'].str.lower().isin(no_issues_set)]
+
+        # ----------- HEATMAP VISUALIZATION FUNCTION -----------
         top_conclusions = df_expanded['Conclusion'].value_counts().nlargest(10).index
         top_verticals = df_expanded['product_detail_cms_vertical'].value_counts().nlargest(20).index
 
@@ -109,7 +127,16 @@ if uploaded_file:
                 filtered_df['Conclusion'].isin(top_conclusions) &
                 filtered_df['product_detail_cms_vertical'].isin(top_verticals)
             ]
+            if df_viz.empty:
+                st.warning(f"No data available to generate heatmap for: {title}")
+                return
+
             heatmap_data = pd.crosstab(df_viz['product_detail_cms_vertical'], df_viz['Conclusion'])
+
+            if heatmap_data.empty:
+                st.warning(f"No cross-tabulated data for heatmap: {title}")
+                return
+
             fig, ax = plt.subplots(figsize=(20, 10))
             sns.heatmap(heatmap_data, annot=True, fmt="d", cmap="YlGnBu", linewidths=0.5, linecolor='gray', ax=ax)
             plt.title(title, fontsize=18)
@@ -117,29 +144,25 @@ if uploaded_file:
             plt.ylabel("Vertical")
             st.pyplot(fig)
 
-        if st.checkbox("Generate RTO Heatmap"):
-            rto_filtered = df_expanded[
-                (df_expanded['rvp_rto_status'].str.lower() == 'rto') &
-                (df_expanded['business_unit'].str.lower() != 'giftcard')
-            ]
+        # ----------- USER OPTIONS TO PLOT -----------
+        if st.checkbox("Show RTO Heatmap"):
             plot_heatmap(rto_filtered, "RTO - Non-Inventorized - Top 10 Return Reasons by Top 20 Verticals")
 
-        if st.checkbox("Generate RVP Heatmap"):
-            rvp_filtered = df_expanded[
-                ((df_expanded['alpha_flag'] == 1) | (df_expanded['alpha_flag'] == '1')) &
-                (df_expanded['business_unit'].str.lower() == 'lifestyle')
-            ]
+        if st.checkbox("Show RVP Heatmap"):
             plot_heatmap(rvp_filtered, "RVP - Non-Inventorized - Top 10 Return Reasons by Top 20 Verticals")
 
+        # ----------- OPTIONAL: SHOW & DOWNLOAD TRANSFORMED DATA -----------
         if st.checkbox("Show Transformed Data"):
             st.dataframe(df_expanded)
 
-        csv = df_expanded.to_csv(index=False).encode('utf-8')
+        def convert_df(df):
+            return df.to_csv(index=False).encode('utf-8')
+
+        csv = convert_df(df_expanded)
         st.download_button(
             label="Download Transformed Data as CSV",
             data=csv,
             file_name='transformed_dataset.csv',
             mime='text/csv',
         )
-
 
