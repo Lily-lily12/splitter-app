@@ -32,7 +32,7 @@ if uploaded_file:
     if not all(col in df.columns for col in required_cols):
         st.error(f"Dataset missing one or more required columns: {required_cols}")
     else:
-        # ----------- FILTER FOR RTO AND RVP (NON-EXCLUDED ONLY) -----------
+        # RTO and RVP filtering for RI
         valid_rto = df[
             (df['rvp_rto_status'].str.lower() == 'rto') &
             (df['business_unit'].str.lower() != 'giftcard') &
@@ -45,7 +45,6 @@ if uploaded_file:
             (~df['destination_area'].isin(exclusion_destinations))
         ].copy()
 
-        # ----------- RI BOXES (RETAINED) -----------
         def inventorized_sum(dest):
             if dest in inventorized_destinations:
                 return 1
@@ -61,6 +60,7 @@ if uploaded_file:
         rvp_total = len(valid_rvp)
         rvp_ri = (rvp_inventorized / rvp_total) if rvp_total > 0 else 0
 
+        # Show RI boxes
         col1, col2 = st.columns(2)
         with col1:
             st.markdown(f"""
@@ -79,62 +79,75 @@ if uploaded_file:
             </div>
             """, unsafe_allow_html=True)
 
-        # ----------- DATA TRANSFORMATION -----------
+        # Expand detailed reasons
         df['detailed_pv_sub_reasons'] = df['detailed_pv_sub_reasons'].fillna("").astype(str)
         df_expanded = df.drop('detailed_pv_sub_reasons', axis=1).join(
-            df['detailed_pv_sub_reasons'].str.split(',', expand=True).stack().reset_index(level=1, drop=True).rename('detailed_pv_sub_reasons')
+            df['detailed_pv_sub_reasons'].str.split(',', expand=True)
+              .stack().reset_index(level=1, drop=True)
+              .rename('detailed_pv_sub_reasons')
         )
+
         df_expanded['detailed_pv_sub_reasons'] = df_expanded['detailed_pv_sub_reasons'].str.strip().str.upper()
 
+        # Map reasons to conclusions
         mapping = load_training_data()
         df_expanded['Conclusion'] = df_expanded['detailed_pv_sub_reasons'].map(mapping)
         df_expanded['Conclusion'] = df_expanded.apply(
             lambda row: row['detailed_pv_sub_reasons'] if pd.isna(row['Conclusion']) else row['Conclusion'], axis=1
         )
 
-        # ----------- FILTER FOR NON-INVENTORIZED ONLY (for heatmap logic) -----------
-        def is_inventorized(dest):
-            if dest in inventorized_destinations or dest in refinishing_destinations:
-                return True
-            return False
-
-        # Exclude inventorized
-        rto_filtered = df_expanded[
-            (df_expanded['rvp_rto_status'].str.lower() == 'rto') &
-            (df_expanded['business_unit'].str.lower() != 'giftcard') &
-            (~df_expanded['destination_area'].isin(exclusion_destinations)) &
-            (~df_expanded['destination_area'].apply(is_inventorized))
-        ]
-
-        rvp_filtered = df_expanded[
-            ((df_expanded['alpha_flag'] == 1) | (df_expanded['alpha_flag'] == '1')) &
-            (df_expanded['business_unit'].str.lower() == 'lifestyle') &
-            (~df_expanded['destination_area'].isin(exclusion_destinations)) &
-            (~df_expanded['destination_area'].apply(is_inventorized))
-        ]
-
-        # Remove 'no issue' reasons
-        no_issues_set = {'no_issue', 'no issue', 'noissue', 'no_issues', 'no issues', 'no-issue', 'nan', ''}
-        rto_filtered = rto_filtered[~rto_filtered['detailed_pv_sub_reasons'].str.lower().isin(no_issues_set)]
-        rvp_filtered = rvp_filtered[~rvp_filtered['detailed_pv_sub_reasons'].str.lower().isin(no_issues_set)]
-
-        # ----------- HEATMAP VISUALIZATION FUNCTION -----------
-        top_conclusions = df_expanded['Conclusion'].value_counts().nlargest(10).index
-        top_verticals = df_expanded['product_detail_cms_vertical'].value_counts().nlargest(20).index
-
-        def plot_heatmap(filtered_df, title):
-            df_viz = filtered_df[
-                filtered_df['Conclusion'].isin(top_conclusions) &
-                filtered_df['product_detail_cms_vertical'].isin(top_verticals)
+        # Define function to filter out inventorized points and clean data
+        def filter_non_inventorized(data):
+            return data[
+                (~data['destination_area'].isin(exclusion_destinations)) &
+                (~data['destination_area'].isin(inventorized_destinations)) &
+                (~data['destination_area'].isin(refinishing_destinations))
             ]
-            if df_viz.empty:
-                st.warning(f"No data available to generate heatmap for: {title}")
+
+        # Clean and filter RTO and RVP again for heatmap
+        rto_heatmap_data = filter_non_inventorized(valid_rto.copy())
+        rvp_heatmap_data = filter_non_inventorized(valid_rvp.copy())
+
+        def prepare_for_heatmap(data):
+            # Expand reasons
+            data['detailed_pv_sub_reasons'] = data['detailed_pv_sub_reasons'].fillna("").astype(str)
+            data_exp = data.drop('detailed_pv_sub_reasons', axis=1).join(
+                data['detailed_pv_sub_reasons'].str.split(',', expand=True)
+                    .stack().reset_index(level=1, drop=True)
+                    .rename('detailed_pv_sub_reasons')
+            )
+            data_exp['detailed_pv_sub_reasons'] = data_exp['detailed_pv_sub_reasons'].str.strip().str.upper()
+
+            # Map
+            data_exp['Conclusion'] = data_exp['detailed_pv_sub_reasons'].map(mapping)
+            data_exp['Conclusion'] = data_exp.apply(
+                lambda row: row['detailed_pv_sub_reasons'] if pd.isna(row['Conclusion']) else row['Conclusion'], axis=1
+            )
+
+            # Remove no issue
+            no_issues = ['no_issue', 'no issue', 'noissue', 'no_issues', 'no issues', 'no-issue', 'nan', '']
+            data_exp = data_exp[~data_exp['detailed_pv_sub_reasons'].str.lower().isin(no_issues)]
+
+            return data_exp
+
+        # Prep and plot
+        def plot_heatmap(df_data, title):
+            if df_data.empty or 'Conclusion' not in df_data.columns:
+                st.warning(f"No data available for {title}")
                 return
 
-            heatmap_data = pd.crosstab(df_viz['product_detail_cms_vertical'], df_viz['Conclusion'])
+            top_conclusions = df_data['Conclusion'].value_counts().nlargest(10).index
+            top_verticals = df_data['product_detail_cms_vertical'].value_counts().nlargest(20).index
+
+            df_filtered = df_data[
+                df_data['Conclusion'].isin(top_conclusions) &
+                df_data['product_detail_cms_vertical'].isin(top_verticals)
+            ]
+
+            heatmap_data = pd.crosstab(df_filtered['product_detail_cms_vertical'], df_filtered['Conclusion'])
 
             if heatmap_data.empty:
-                st.warning(f"No cross-tabulated data for heatmap: {title}")
+                st.warning(f"No data for heatmap: {title}")
                 return
 
             fig, ax = plt.subplots(figsize=(20, 10))
@@ -144,17 +157,18 @@ if uploaded_file:
             plt.ylabel("Vertical")
             st.pyplot(fig)
 
-        # ----------- USER OPTIONS TO PLOT -----------
-        if st.checkbox("Show RTO Heatmap"):
-            plot_heatmap(rto_filtered, "RTO - Non-Inventorized - Top 10 Return Reasons by Top 20 Verticals")
+        # UI options to generate each heatmap
+        if st.button("Generate RTO Heatmap"):
+            plot_heatmap(prepare_for_heatmap(rto_heatmap_data), "RTO - Non-Inventorized - Top 10 Reasons by Top 20 Verticals")
 
-        if st.checkbox("Show RVP Heatmap"):
-            plot_heatmap(rvp_filtered, "RVP - Non-Inventorized - Top 10 Return Reasons by Top 20 Verticals")
+        if st.button("Generate RVP Heatmap"):
+            plot_heatmap(prepare_for_heatmap(rvp_heatmap_data), "RVP - Non-Inventorized - Top 10 Reasons by Top 20 Verticals")
 
-        # ----------- OPTIONAL: SHOW & DOWNLOAD TRANSFORMED DATA -----------
+        # Show transformed data option
         if st.checkbox("Show Transformed Data"):
             st.dataframe(df_expanded)
 
+        # Download
         def convert_df(df):
             return df.to_csv(index=False).encode('utf-8')
 
@@ -165,4 +179,3 @@ if uploaded_file:
             file_name='transformed_dataset.csv',
             mime='text/csv',
         )
-
